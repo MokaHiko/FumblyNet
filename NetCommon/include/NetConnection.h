@@ -6,6 +6,10 @@
 #include "NetMessage.h"
 
 namespace Fumbly {
+    // Forward declare server interface
+    template<typename T>
+    class ServerInterface;
+
     template<typename T>
     class Connection: public std::enable_shared_from_this<Connection<T>>
     {
@@ -21,19 +25,39 @@ namespace Fumbly {
             :m_AsioContext(asioContext), m_Socket(std::move(socket)), m_QMessagesIn(qIn)
         {
             m_OwnerType = owner;
+
+            // Validation paths
+            if(m_OwnerType == Owner::Server)
+            {
+                // Store sent message
+                m_HandshakeOut = uint64_t(std::chrono::system_clock::now().time_since_epoch().count());
+
+                // Store precalculate solution
+                m_HandshakeCheck = EncryptData(m_HandshakeOut);
+            }
+            else if (m_OwnerType == Owner::Client)
+            {
+                m_HandshakeIn = 0;
+                m_HandshakeOut = 0;
+            }
         }
         ~Connection(){}
 
     public:
         // Connection provides unique ID to client and prime context for messages
-        void ConnectToClient(uint32_t uid = 0)
+        void ConnectToClient(ServerInterface<T>* server, uint32_t uid = 0)
         {
             if (m_OwnerType == Owner::Server)
             {
                 if (m_Socket.is_open())
                 {
                     m_ID = uid;
-                    ReadHeader();
+
+                    // Send validation data to client trying to connect
+                    WriteValidation();
+
+                    // Wait async for client to respond
+                    ReadValidation(server);
                 }
             }
         }
@@ -47,7 +71,7 @@ namespace Fumbly {
                 [this](std::error_code ec, asio::ip::tcp::endpoint endpoint){
                     if(!ec)
                     {
-                        ReadHeader();
+                        ReadValidation();
                     }
                     else
                     {
@@ -199,6 +223,73 @@ namespace Fumbly {
             // Give asio another async task (reading more messages)
             ReadHeader();
         }
+
+        // "Encrypt data"
+        uint64_t EncryptData(uint64_t input)
+        {
+            uint64_t output = input ^ 0xDEABCFFA;
+            return output;
+        }
+
+        // ASYNC - Used by both server and client to write validation packet
+        void WriteValidation()
+        {
+            asio::async_write(m_Socket, asio::buffer(&m_HandshakeOut, sizeof(uint64_t)), 
+            [this](asio::error_code ec, std::size_t length){
+                if(!ec)
+                {
+                    if(m_OwnerType == Owner::Client)
+                        ReadHeader();
+                }
+                else
+                {
+                    std::cout << "Failed to sent validation message!\n";
+                    m_Socket.close();
+                }
+            });
+        }
+
+        // Async - Used by both server and client to read validation messages sent
+        void ReadValidation(ServerInterface<T>* server = nullptr)
+        {
+            asio::async_read(m_Socket, asio::buffer(&m_HandshakeIn, sizeof(uint64_t)),
+                [this, server](asio::error_code ec, std::size_t length)
+                {
+                    if (!ec)
+                    {
+                        if (m_OwnerType == Owner::Server)
+                        {
+                            if (m_HandshakeIn == m_HandshakeCheck)
+                            {
+                                // Call client validation callback
+                                std::cout << "Client Validated" << std::endl;
+                                server->OnClientValidated(this->shared_from_this());
+
+                                // Begin Async Read Loop
+                                ReadHeader();
+                            }
+                            else
+                            {
+                                std::cout << "Client Disconected (Failed to validate message!)\n";
+                                m_Socket.close();
+                            }
+                        }
+                        else if (m_OwnerType == Owner::Client)
+                        {
+                            // Solve received message
+                            m_HandshakeOut = EncryptData(m_HandshakeIn);
+
+                            // Send solution
+                            WriteValidation();
+                        }
+                    }
+                    else
+                    {
+                        std::cout << "Client Disconected (Failed to read validation message!)\n";
+                        m_Socket.close();
+                    }
+                });
+        }
     protected:
         // Unique socket to a remote held by connection
         asio::ip::tcp::socket m_Socket;
@@ -218,5 +309,10 @@ namespace Fumbly {
         Owner m_OwnerType = Owner::Unkown;
 
         uint32_t m_ID = 0;
+
+        // Handshake validation
+        uint64_t m_HandshakeOut = 0;
+        uint64_t m_HandshakeIn = 0;
+        uint64_t m_HandshakeCheck = 0;
     };
 }

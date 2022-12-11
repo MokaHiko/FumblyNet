@@ -70,7 +70,7 @@ namespace Fumbly {
                     // Give user ability to deny connection
                      if(OnClientConnect(newconn)) {
                          m_DeqConnections.push_back(std::move(newconn));
-                         m_DeqConnections.back()->ConnectToClient(m_IDCounter++);
+                         m_DeqConnections.back()->ConnectToClient(this, m_IDCounter++);
                          std::cout << "[SERVER] client: " << m_DeqConnections.back()->GetID() << " Connection Approved\n";
 
                      } else {
@@ -121,8 +121,10 @@ namespace Fumbly {
             }
         }
 
-        void Update(size_t nmaxMessages = -1) 
+        void Update(size_t nmaxMessages = -1, bool waitForMessage = false) 
         {
+            // We don't need the server to occupy 100% of a cpu core
+            if(waitForMessage) m_QMessagesIn.Wait();
             size_t nMessageCount = 0;
 
             while(nMessageCount < nmaxMessages && !m_QMessagesIn.Empty())
@@ -137,6 +139,12 @@ namespace Fumbly {
             }
         }
 
+    public:
+        // Called after client is validated
+        virtual void OnClientValidated(std::shared_ptr<Connection<T>> client)
+        {
+
+        }
     protected:
         // Return if valid client
         virtual bool OnClientConnect(std::shared_ptr<Connection<T>> client)

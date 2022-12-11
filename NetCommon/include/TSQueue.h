@@ -42,6 +42,10 @@ namespace Fumbly {
         {
             std::scoped_lock(muxQueue);
             deqQue.emplace_front(std::move(item));
+
+            // Signal condition variable to wake up
+            std::unique_lock<std::mutex> ul(muxBlocking);
+            cvBlocking.notify_one();
         }
 
         T PopFront()
@@ -65,6 +69,9 @@ namespace Fumbly {
             std::scoped_lock(muxQueue);
             deqQue.emplace_back(std::move(item));
 
+            // Signal condition variable to wake up
+            std::unique_lock<std::mutex> ul(muxBlocking);
+            cvBlocking.notify_one();
         }
 
         bool Empty()
@@ -73,8 +80,23 @@ namespace Fumbly {
             return deqQue.empty();
         }
 
+        void Wait()
+        {
+            // Run while deqQue is empty
+            while(Empty())
+            {
+                std::unique_lock<std::mutex> ul(muxBlocking);
+
+                // wait until condition has been signalled by push or pop functions
+                cvBlocking.wait(ul);
+            }
+        }
+
     private:
         std::mutex muxQueue;
         std::deque<T> deqQue;
+
+        std::condition_variable cvBlocking;
+        std::mutex muxBlocking;
     };
 }
